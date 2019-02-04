@@ -27,7 +27,7 @@ WORK_DIR = "."
 FIELDS = ["USER", "REMOTE_ADDR", "DOC_ID", "DOC_HASH", "TIMESTAMP", "@timestamp", "HOSTNAME"]
 
 
-def get_doc_logs(es_host, start, end, limit=1000, wait_sec=10):
+def get_doc_logs(es_host, es_index, start, end, limit=1000, wait_sec=10):
     total = 1
     offset = 0
 
@@ -35,14 +35,13 @@ def get_doc_logs(es_host, start, end, limit=1000, wait_sec=10):
         total = 0
         request_body = (
             {
-                "index": ["hpi-sandbox-*"],
+                "index": [es_index],
             },
             {
                 "query": {
                     "bool": {
                         "must": [
-                            {"match_all": {}},
-                            {"match_phrase": {"MESSAGE_ID": {"query":"uploaded_document"}}},
+                            {"match_phrase": {"MESSAGE_ID": {"query": "uploaded_document"}}},
                             {"range": {"@timestamp": {
                                 "gte": int(start.timestamp() * 1000),
                                 "lte": int(end.timestamp() * 1000),
@@ -130,8 +129,7 @@ def generate_temp_report_url(account, container, key, temp_url_key, expires=60*6
         full_path,
         int(time() + int(expires)),
         temp_url_key,
-        'GET',
-        absolute=False
+        'GET'
     )
     return url
 
@@ -157,30 +155,7 @@ def get_swift_details(options):
     return storage_host, account
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Openprocurement Billing")
-    parser.add_argument('-c', '--config', required=True)
-    args = parser.parse_args()
-
-    with open(args.config) as f:
-        config = yaml.load(f)
-
-    now = datetime.now(tz=pytz.timezone("Europe/Kiev"))
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start = today - timedelta(days=1)
-    end = today - timedelta(seconds=1)
-
-    logger.info("Report time range: {} - {}".format(start, end))
-
-    directory = os.path.join(WORK_DIR, str(start.date()))
-
-    # fill the directory with report files
-    es_host = config["es"]["host"]
-    with ReportFilesManager(directory) as rf_manager:
-        for hit in get_doc_logs(es_host, start, end):
-            rf_manager.write(hit["_source"])
-
-    # upload to swift
+def upload_to_swift(directory, swift_config):
     upload_objects = []
     for name in os.listdir(directory):
         full_name = os.path.join(directory, name)
@@ -194,27 +169,52 @@ def main():
                 )
             )
 
-    swift_config = config["swift"]
     storage_host, account = get_swift_details(swift_config)
-
     links = []
     with SwiftService(options=swift_config) as swift:
         for r in swift.upload(swift_config["container"], upload_objects):
             if r['success']:
                 if 'object' in r:
-                    links.append(
-                        generate_temp_report_url(account, swift_config["container"],
-                                                 r['object'], swift_config["temp_url_key"])
-                    )
+                    link = generate_temp_report_url(account, swift_config["container"],
+                                                    r['object'], swift_config["temp_url_key"])
+                    links.append("".join((storage_host, link)))
             else:
                 logger.error(r)
+    return links
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Openprocurement Billing")
+    parser.add_argument('-c', '--config', required=True)
+    args = parser.parse_args()
+    with open(args.config) as f:
+        config = yaml.load(f)
+
+    now = datetime.now(tz=pytz.timezone("Europe/Kiev"))
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today - timedelta(days=1)
+    end = today - timedelta(seconds=1)
+    logger.info("Report time range: {} - {}".format(start, end))
+
+    directory = os.path.join(WORK_DIR, str(start.date()))
+
+    # fill the directory with report files
+    es_host, es_index = config["es"]["host"], config["es"]["index"]
+    with ReportFilesManager(directory) as rf_manager:
+        for hit in get_doc_logs(es_host, es_index, start, end):
+            rf_manager.write(hit["_source"])
+
+    # TODO: add signing here
+
+    # upload to swift
+    links = upload_to_swift(directory, config["swift"])
 
     # cleanup
     shutil.rmtree(directory)
 
-    print("Reports uploaded:")
+    # TODO: add sending of these links
     for link in links:
-        print("{}{}".format(storage_host, link))
+        print(link)
 
 
 if __name__ == "__main__":

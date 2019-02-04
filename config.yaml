@@ -1,5 +1,6 @@
 es:
   host: http://10.6.4.227/elasticsearch
+  index: hpi-sandbox-*
 
 swift:
   auth_version: 3
