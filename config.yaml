@@ -1,3 +1,6 @@
+es:
+  host: http://10.6.4.227/elasticsearch
+
 swift:
   auth_version: 3
   os_username: proz-np-user-3

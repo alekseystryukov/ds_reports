@@ -8,6 +8,7 @@ import argparse
 import urllib3
 import logging
 import requests
+import shutil
 import json
 import pytz
 import yaml
@@ -23,16 +24,10 @@ logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
 
 WORK_DIR = "."
-ES_HOST = "http://10.6.4.227/elasticsearch"
-LIMIT = 1000
-WAIT_SEC = 10
 FIELDS = ["USER", "REMOTE_ADDR", "DOC_ID", "DOC_HASH", "TIMESTAMP", "@timestamp", "HOSTNAME"]
-SWIFT_HOST = "https://swift-dev-gc.prozorro.gov.ua"
-
-TEMP_URL_KEY = "aPS4pSLej9g9EmYxvL5pFMGR4rVAzDRQJ"
 
 
-def get_doc_logs(start, end):
+def get_doc_logs(es_host, start, end, limit=1000, wait_sec=10):
     total = 1
     offset = 0
 
@@ -57,7 +52,7 @@ def get_doc_logs(start, end):
                     }
                 },
                 "from": offset,
-                "size": LIMIT,
+                "size": limit,
                 "sort": [{"@timestamp": {"order": "asc", "unmapped_type": "boolean"}}],
                 "_source": {"includes": FIELDS},
             }
@@ -65,12 +60,12 @@ def get_doc_logs(start, end):
         headers = {
             "kbn-version": "5.6.2",
         }
-        response = requests.post("{}/_msearch".format(ES_HOST),
+        response = requests.post("{}/_msearch".format(es_host),
                                  data="\n".join(json.dumps(e) for e in request_body) + "\n",
                                  headers=headers)
         if response.status_code != 200:
             logger.error("Unexpected response {}:{}".format(response.status_code, response.text))
-            sleep(WAIT_SEC)
+            sleep(wait_sec)
             continue
         else:
             resp_json = response.json()
@@ -84,7 +79,7 @@ def get_doc_logs(start, end):
                     hits["hits"][-1]["_source"]["TIMESTAMP"]
                 )
             )
-            offset += LIMIT
+            offset += limit
             yield from hits["hits"]
 
 
@@ -129,12 +124,12 @@ class ReportFilesManager:
         )
 
 
-def generate_temp_report_url(account, container, key, expires=60*60*48):
+def generate_temp_report_url(account, container, key, temp_url_key, expires=60*60*48):
     full_path = "/v1/{}/{}/{}".format(account, container, key)
     url = generate_temp_url(
         full_path,
         int(time() + int(expires)),
-        TEMP_URL_KEY,
+        temp_url_key,
         'GET',
         absolute=False
     )
@@ -180,8 +175,9 @@ def main():
     directory = os.path.join(WORK_DIR, str(start.date()))
 
     # fill the directory with report files
+    es_host = config["es"]["host"]
     with ReportFilesManager(directory) as rf_manager:
-        for hit in get_doc_logs(start, end):
+        for hit in get_doc_logs(es_host, start, end):
             rf_manager.write(hit["_source"])
 
     # upload to swift
@@ -203,14 +199,18 @@ def main():
 
     links = []
     with SwiftService(options=swift_config) as swift:
-        for r in swift.upload(swift_config["container"], upload_objects[:2]):
+        for r in swift.upload(swift_config["container"], upload_objects):
             if r['success']:
                 if 'object' in r:
                     links.append(
-                        generate_temp_report_url(account, swift_config["container"], r['object'])
+                        generate_temp_report_url(account, swift_config["container"],
+                                                 r['object'], swift_config["temp_url_key"])
                     )
             else:
                 logger.error(r)
+
+    # cleanup
+    shutil.rmtree(directory)
 
     print("Reports uploaded:")
     for link in links:
