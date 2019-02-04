@@ -1,0 +1,12 @@
+swift:
+  auth_version: 3
+  os_username: proz-np-user-3
+  os_password: Iopr3SbFdarxljHpoQunMx4P
+  os_user_domain_name: default
+  os_project_name: prozorro-np-3
+  os_project_domain_name: default
+  os_auth_url: https://id-swift-np.dc.prozorro.gov.ua/v3
+  temp_url_key: aPS4pSLej9g9EmYxvL5pFMGR4rVAzDRQJ
+  insecure: True
+  object_uu_threads: 20
+  container: doc-report-dev
